@@ -1,6 +1,7 @@
 package expiry.actor
 
 import akka.actor._
+import akka.persistence.{PersistentActor, RecoveryCompleted}
 import expiry.model.EntityWithExpireDate
 
 import scala.concurrent.duration.{Deadline, FiniteDuration}
@@ -22,6 +23,8 @@ class EntityTimerFrontendActor extends Actor with ActorLogging {
     case x: SetTimeoutDuration =>
       log.info("Received {}", x)
       getOrCreateChild(x.id) forward x
+    case x: TimedOut =>
+      log.error("TIMED! {}", x)
   }
 }
 object EntityTimerFrontendActor {
@@ -32,53 +35,53 @@ object EntityTimerFrontendActor {
   case class TimedOut(id: String, deadline: Deadline)
 }
 
-class EntityTimerActor(id: String) extends Actor with ActorLogging {
+class EntityTimerActor(id: String) extends PersistentActor with ActorLogging {
 
   import EntityTimerFrontendActor._
   import context.dispatcher
 
-  override def receive: Actor.Receive = {
-    case TouchEvent(`id`, time) =>
-      context.become(waitForConfig(time))
-    case SetTimeoutDuration(`id`, time) =>
-      context.become(waitForTouch(time))
+  var state = EntityWithExpireDate(id, None, None)
+  var timer: Option[Cancellable] = None
+  var fired: Boolean = false
+
+  def setupTimers(updater: EntityWithExpireDate => EntityWithExpireDate) = {
+    fired = false
+    state = updater(state)
+    log.info("Re-setting up timer {}, {}", state, state.timeLeft)
+    timer.foreach(_.cancel())
+    timer = for {
+      at <- state.expiryAt
+      left <- state.timeLeft
+    } yield context.system.scheduler.scheduleOnce(left, self, TimedOut(id, at))
   }
 
-  def waitForTouch(timeout: FiniteDuration): Actor.Receive = {
-    case TouchEvent(`id`, seenAt) =>
-      val entity = EntityWithExpireDate(id, timeout, seenAt)
-      setupTimers(entity, None)
-    case SetTimeoutDuration(`id`,  newTimeout) =>
-      context.become(waitForTouch(newTimeout))
+  override def receiveRecover: Receive = {
+    case x: TouchEvent =>
+      fired = false
+      state = state.touch(x.time)
+    case x: SetTimeoutDuration =>
+      fired = false
+      state = state.withTimeOut(x.timeout)
+    case _: TimedOut => fired = true
+    case RecoveryCompleted =>
+      if(!fired) setupTimers(identity)
   }
 
-  def waitForConfig(seenAt: Deadline): Actor.Receive = {
-    case TouchEvent(`id`, time) =>
-      context.become(waitForConfig(time))
-    case SetTimeoutDuration(`id`, timeout) =>
-      val entity = EntityWithExpireDate(id, timeout, seenAt)
-      setupTimers(entity, None)
+
+  override def receiveCommand: Receive = {
+    case x @ TouchEvent(`id`, seenAt) => persist(x) { _ =>
+      setupTimers(_.touch(seenAt))
+    }
+    case x @ SetTimeoutDuration(`id`, timeout) => persist(x) { _ =>
+      setupTimers(_.withTimeOut(timeout))
+    }
+    case x: TimedOut => persist(x) { _ =>
+      fired = true
+      context.parent forward x
+    }
   }
 
-  def initialized(entity: EntityWithExpireDate, previousTimer: Cancellable): Actor.Receive =  {
-      case x @ TimedOut(`id`, _) =>
-        log.info("Timed out {}", x)
-        context.parent forward x
-      case x @ TouchEvent(`id`, time) =>
-        val newEntity = entity.touch(time)
-        setupTimers(newEntity, Some(previousTimer))
-      case SetTimeoutDuration(`id`, timeout) =>
-        val newEntity = entity.withTimeOut(timeout)
-        setupTimers(newEntity, Some(previousTimer))
-  }
-
-  def setupTimers(newE: EntityWithExpireDate, schedule: Option[Cancellable]) = {
-    log.info("Re-setting up timer {}, {}", newE, newE.timeLeft)
-    schedule.foreach(_.cancel())
-    val newTimer = context.system.scheduler.scheduleOnce(newE.timeLeft, self, TimedOut(id, newE.expiryAt))
-    context.become(initialized(newE, newTimer))
-  }
-
+  override def persistenceId: String = id
 }
 
 object EntityTimerActor {
@@ -93,6 +96,6 @@ object Main extends App {
 
   actor ! TouchEvent("1", Deadline.now)
   Thread.sleep(2000)
-  actor ! SetTimeoutDuration("1", 1.second)
+//  actor ! SetTimeoutDuration("1", 5.second)
 
 }
