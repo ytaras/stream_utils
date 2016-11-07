@@ -2,12 +2,15 @@ package expiry.actor
 
 import akka.actor._
 import akka.persistence.{PersistentActor, RecoveryCompleted}
+import akka.stream.actor.{ActorSubscriber, MaxInFlightRequestStrategy, RequestStrategy}
 import expiry.model.EntityWithExpireDate
 
 import scala.concurrent.duration.{Deadline, FiniteDuration}
 
 class EntityTimerFrontendActor extends Actor with ActorLogging {
   import EntityTimerFrontendActor._
+
+  var inFlight = 0
 
   def getOrCreateChild(id: String): ActorRef =
     context
@@ -25,6 +28,10 @@ class EntityTimerFrontendActor extends Actor with ActorLogging {
       getOrCreateChild(x.id) forward x
     case x: TimedOut =>
       log.error("TIMED! {}", x)
+  }
+
+  override protected def requestStrategy: RequestStrategy = new MaxInFlightRequestStrategy() {
+    override def inFlightInternally: Int = inFlight
   }
 }
 object EntityTimerFrontendActor {
