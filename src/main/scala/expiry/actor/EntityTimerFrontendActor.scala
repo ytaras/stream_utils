@@ -1,18 +1,18 @@
-package expiry.api
+package expiry.actor
 
 import akka.actor._
 import expiry.model.EntityWithExpireDate
 
 import scala.concurrent.duration.{Deadline, FiniteDuration}
 
-class TimerActor extends Actor with ActorLogging {
-  import TimerActor._
+class EntityTimerFrontendActor extends Actor with ActorLogging {
+  import EntityTimerFrontendActor._
 
   def getOrCreateChild(id: String): ActorRef =
     context
       .child(id)
       .getOrElse(
-        context.actorOf(ChildTimer.props(id), id)
+        context.actorOf(EntityTimerActor.props(id), id)
       )
 
   override def receive: Receive = {
@@ -24,17 +24,17 @@ class TimerActor extends Actor with ActorLogging {
       getOrCreateChild(x.id) forward x
   }
 }
-object TimerActor {
-  def props: Props = Props(new TimerActor())
+object EntityTimerFrontendActor {
+  def props: Props = Props(new EntityTimerFrontendActor())
 
   case class TouchEvent(id: String, time: Deadline)
   case class SetTimeoutDuration(id: String, timeout: FiniteDuration)
   case class TimedOut(id: String, deadline: Deadline)
 }
 
-class ChildTimer(id: String) extends Actor with ActorLogging {
+class EntityTimerActor(id: String) extends Actor with ActorLogging {
 
-  import TimerActor._
+  import EntityTimerFrontendActor._
   import context.dispatcher
 
   override def receive: Actor.Receive = {
@@ -81,15 +81,15 @@ class ChildTimer(id: String) extends Actor with ActorLogging {
 
 }
 
-object ChildTimer {
-  def props(id: String) = Props(new ChildTimer(id))
+object EntityTimerActor {
+  def props(id: String) = Props(new EntityTimerActor(id))
 }
 
 object Main extends App {
   import scala.concurrent.duration._
-  import TimerActor._
+  import EntityTimerFrontendActor._
   val actorSystem = ActorSystem()
-  val actor = actorSystem.actorOf(TimerActor.props)
+  val actor = actorSystem.actorOf(EntityTimerFrontendActor.props)
 
   actor ! TouchEvent("1", Deadline.now)
   Thread.sleep(2000)
